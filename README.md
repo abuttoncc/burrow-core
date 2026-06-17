@@ -14,12 +14,26 @@ pip install -e .            # 在本仓库根目录
 python -m build             # 产物在 dist/burrow_core-X.Y.Z-py3-none-any.whl
 pip install dist/burrow_core-*.whl
 
-# 私有 git 发布（推到私有 repo 打 tag 后）
-pip install "git+https://github.com/<you>/burrow-core.git@v0.1.0"
+# 私有 git 发布（已推到 abuttoncc/burrow-core，打了 tag）
+pip install "git+https://github.com/abuttoncc/burrow-core.git@v0.1.0"
 ```
 
-> 装好后 `burrow` 脚本在 `~/Library/Python/3.x/bin/`（macOS user install）。若不在 PATH，
-> 要么把该目录加进 PATH，要么用 `python -m burrow …` 等价调用。
+### 把 `burrow` 加进 PATH（macOS user install）
+
+`pip install --user` / `pip install -e .` 会把 `burrow` 脚本放进 user-base 的 `bin/`（macOS 通常是
+`~/Library/Python/3.x/bin/`，**默认不在 PATH**）。两种办法二选一：
+
+```bash
+# A. 永久可用：把该目录加进 PATH（按你的 Python 版本改 3.12）
+echo 'export PATH="$HOME/Library/Python/3.12/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc                       # 或新开终端标签
+burrow version                        # 验证
+
+# B. 不改 PATH：等价调用
+python -m burrow sync --all
+```
+
+> 实际目录用 `python3 -m site --user-base`（输出后接 `/bin`）确认。
 > 版本号单一源：`burrow/__init__.py` 的 `__version__`；发布即 bump 它 + 打同名 git tag。
 
 ## 用法
