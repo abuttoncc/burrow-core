@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "burrow-core"
+description = "陋居共享引擎同步器：valu_air / philo_air 双库 dashboard + auto-wiki 引擎的单一源 vendored sync"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+authors = [{ name = "James Lee" }]
+keywords = ["obsidian", "dashboard", "knowledge-base", "vendored-sync", "burrow"]
+dynamic = ["version"]
+# CLI 本体只用标准库；被同步的引擎文件（schema.py）在各库运行时需 pydantic，与本包安装无关。
+dependencies = []
+
+[project.scripts]
+burrow = "burrow.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/abuttoncc/burrow-core"
+
+[tool.setuptools]
+packages = ["burrow"]
+
+[tool.setuptools.dynamic]
+version = { attr = "burrow.__version__" }
+
+[tool.setuptools.package-data]
+burrow = ["manifest.json", "core/**/*"]

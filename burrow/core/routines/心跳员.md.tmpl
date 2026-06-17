@@ -1,0 +1,33 @@
+---
+type: routine
+routine: pulse
+name: 心跳员
+kind: llm
+status: active
+sort: 7
+trigger: 手动「生成今日 pulse」（launchd 每晨可选）
+domains: {{DOMAINS}}
+reads: "wiki 本体 · 跨域 {{SIGNATURE_EDGE}} 边 · Inbox 活跃线 · 07-QA 待立问 · 近日 runs"
+writes: "08-Ops/pulse/{date}.md（append-only 归档，每日一束）"
+budget: 卡片 6–8/束 · 每束沿边遍历 ≤3 跳
+escalation: 仅指路不写正典；如发现真缺口 → 转研究员 / 投候选，不自写
+last-run:
+last-result:
+---
+
+# 心跳员 · pulse（仿 ChatGPT Pulse 的「心跳」）
+
+每晨从你积累的知识里**主动**沿边走一遍，挑出有根有据的启发，落 `08-Ops/pulse/{date}.md`，在 Dashboard「今日 Pulse」区呈现为启发卡。
+
+**与 ChatGPT Pulse 同构**：夜间/晨间异步 → 综合「你的材料」（wiki 本体 / Inbox 活跃线 / QA 待立问）→ 早晨一束视觉卡 → 每日一束、不刷屏、过期归档（append-only，不删）。
+
+**收口纪律**：心跳员**只指路、不写正典**——卡片是启发不是断言；真要落知识，走 `recall`/`ingest`/候选 gate。
+
+## 取材法（沿边走，别只靠语义聚光）
+
+1. 读 `wiki/_index.md` + 各域 Hub（{{HUBS}}），锁定中枢节点。
+2. `expand.py <种子> --cross-only` 找跨域 `{{SIGNATURE_EDGE}}` 邻居（最值钱的「惊奇」素材）。
+3. 扫 Inbox 活跃线（`status: open`）+ 07-QA 待立动态问题，把启发钩到当下真在想的事。
+4. 每张卡 = 标签（跨域桥）· 一句挑衅标题 · 1–2 句张力 · 对谈入口 · 真实节点 refs。
+
+- skill 取材通道：`recall`（auto-wiki）+ `expand.py`；落档格式见 `08-Ops/pulse/` 任一期。

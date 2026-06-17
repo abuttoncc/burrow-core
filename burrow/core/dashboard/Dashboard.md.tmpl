@@ -1,0 +1,417 @@
+---
+cssclasses:
+  - dashboard
+---
+
+```dataviewjs
+/* ════ 陋居 Dashboard v6 ════ 引擎来自 _burrow-core，勿手改本文件。
+   单块渲染同构 DOM（masthead / 北极星条 / pulse / 三列 grid / footer），
+   样式在 .obsidian/snippets/dashboard.css（.bw 命名空间）。
+   个性化全部来自下方 CFG（由 burrow.py 从各库 .burrow/config.json 注入）。 */
+try {
+
+/* ───── 配置（per-vault，burrow.py 注入；勿手改）───── */
+const CFG = {{CFG_JSON}};
+
+/* ───── 数据采集 ───── */
+const esc = s => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+const cut = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0, n) + "…" : s; };
+const fmtD = d => d && d.toFormat ? d.toFormat("MM-dd") : (d ? String(d) : "—");
+
+// 本体（全域）—— hub 页一律 type:ontology，已被 type 过滤排除，无需按域名写白名单
+const nodes = dv.pages('"wiki"').where(p => p.type && p.type != "ontology" && p.type != "registry" && !p.file.name.startsWith("_") && p.file.name != "log").array();
+const edges = nodes.reduce((s, p) => s + ((p.relations || []).length), 0);
+const LABELS = new Set(CFG.labels);
+const contestedNodes = nodes.filter(p => p.confidence == "contested" || p.confidence == "low");
+const contested = contestedNodes.length;
+const noSrc = nodes.filter(p => p.type != "source" && (!p.sources || p.sources.length == 0)).length;
+const orphan = nodes.filter(p => p.type != "source" && p.type != "analysis" && p.file.inlinks.length == 0).length;
+let broken = 0;
+for (const p of nodes) for (const l of (p.file.outlinks || [])) {
+  if (!l.path) continue;
+  const nm = l.path.split("/").pop().replace(/\.md$/, "");
+  if (LABELS.has(nm)) continue;
+  if (!dv.page(l.path)) broken++;
+}
+const defects = contested + noSrc + orphan + broken;
+const ORDER = CFG.order;
+const cnt = {}; for (const p of nodes) { const s = p.file.folder.split("/").pop(); cnt[s] = (cnt[s] || 0) + 1; }
+// 域：从节点路径 wiki/{domain}/… 动态推断（不写死域数与域名）
+const domainSlugs = [...new Set(nodes.map(p => p.file.path.split("/")[1]).filter(Boolean))].sort();
+const nDomains = domainSlugs.length;
+const domainsUpper = domainSlugs.map(s => s.toUpperCase()).join(" / ");
+
+// Inbox
+const pendInbox = dv.pages('"Inbox"').where(p => p.file.name !== "README" && p.file.name !== "plan" && p.compiled !== true).array();
+let oldest = 0;
+for (const p of pendInbox) {
+  if (!p.created) continue;
+  const c = (typeof p.created === "string") ? dv.date(p.created) : p.created;
+  const d = Math.floor(dv.date("today").diff(c, "days").days);
+  if (d > oldest) oldest = d;
+}
+
+// 陋居层
+const cands = dv.pages('"08-Ops/review"').where(p => p.type == "candidate" && p.status == "pending").sort(p => p.created, "asc").array();
+const gatesPage = dv.page("08-Ops/审批账本");
+const gates = (gatesPage && gatesPage.gates) ? gatesPage.gates : [];
+const gateCtx = id => { const g = gates.find(x => x.id == id); return g ? (g.state == "locked" ? "永久人工" : g.state == "auto" ? "自动批准 ✓" : g.streak + "/" + g.threshold) : ""; };
+const routines = dv.pages('"08-Ops/routines"').where(p => p.type == "routine").sort(p => p.sort, "asc").array();
+const runs = dv.pages('"08-Ops/runs"').where(p => p.type == "run").sort(p => p.started, "desc").array();
+const lastRun = runs.length ? runs[0] : null;
+const STALE_MS = 2 * 3600 * 1000;
+const stateOf = r => {
+  if (r.status == "paused") return "paused";
+  const lr = runs.find(x => x.routine == r.routine);
+  if (lr && lr.status == "fail") return "anomaly";
+  if (lr && lr.status == "running") {
+    const ms = lr.started && lr.started.toMillis ? lr.started.toMillis() : null;
+    if (!ms || Date.now() - ms > STALE_MS) return "anomaly";   // 僵尸 run：无时间戳或 running 超 2h，视为异常
+    return "working";
+  }
+  if (cands.some(c => c.routine == r.routine)) return "queue";
+  return "idle";
+};
+const rStates = routines.map(stateOf);
+const nAnomaly = rStates.filter(k => k == "anomaly").length;
+let nRecent = 0;
+try { const cutoff = dv.date("today").minus(dv.duration("1d")); nRecent = runs.filter(r => r.started && r.started >= cutoff).length; } catch (e) { nRecent = lastRun ? 1 : 0; }
+
+// QA
+const qas = dv.pages('"07-QA"').where(p => p.type == "qa").sort(p => p["last-run"], "desc").array().slice(0, 5);
+
+// Pulse（今日启发束）—— 心跳员产出，读 08-Ops/pulse 最新一期（feature flag: CFG.features.pulse）
+const pulses = CFG.features && CFG.features.pulse ? dv.pages('"08-Ops/pulse"').where(p => p.type == "pulse").sort(p => p.date, "desc").array() : [];
+const pulseDoc = pulses.length ? pulses[0] : null;
+const pulseCards = (pulseDoc && Array.isArray(pulseDoc.cards)) ? pulseDoc.cards : [];
+
+// 最近 run 的飞轮步进
+let steps = [], runMeta = "";
+if (lastRun) {
+  const raw = await dv.io.load(lastRun.file.path);
+  const m = raw.match(/## 飞轮\n([\s\S]*?)(\n## |$)/);
+  if (m) {
+    steps = m[1].trim().split("\n").filter(l => l.startsWith("- ")).map(l => {
+      const mm = l.match(/^- (\S+)\s+([✓✗…xX])\s+(.*)$/);
+      if (!mm) return { t: "", mark: "·", what: l.slice(2), small: "", n: "" };
+      const seg = mm[3].split(" · ");
+      return { t: mm[1], mark: mm[2], what: seg[0] || "", small: seg.length > 2 ? seg.slice(1, -1).join(" · ") : "", n: seg.length > 1 ? seg[seg.length - 1] : "" };
+    });
+  }
+}
+
+// 审核候选卡正文（diff / 来源 各取前几行）
+const cardData = [];
+for (const c of cands.slice(0, 4)) {
+  let diff = "", src = "";
+  try {
+    const raw = await dv.io.load(c.file.path);
+    const dm = raw.match(/## 变更\n([\s\S]*?)(\n## |$)/);
+    if (dm) diff = dm[1].trim().split("\n").filter(x => x.trim()).slice(0, 3).map(esc).join("<br>");
+    const sm = raw.match(/## 来源\n([\s\S]*?)(\n## |$)/);
+    if (sm) src = esc(sm[1].trim().split("\n")[0]);
+  } catch (e) {}
+  cardData.push({ c, diff, src });
+}
+
+/* ───── 时钟 SVG ───── */
+const STATES = [
+  { key: "working", name: "工作中", angle: 0,   color: "#2F7D4E" },
+  { key: "queue",   name: "排队",   angle: 72,  color: "#B5851B" },
+  { key: "idle",    name: "待命",   angle: 144, color: "#7A8694" },
+  { key: "paused",  name: "暂停",   angle: 216, color: "#8E887A" },
+  { key: "anomaly", name: "异常",   angle: 288, color: "#C8371F" },
+];
+const C0 = 170;
+const polar = (a, r) => [ +(C0 + r * Math.sin(a * Math.PI / 180)).toFixed(1), +(C0 - r * Math.cos(a * Math.PI / 180)).toFixed(1) ];
+const secPath = (a0, a1, r) => { const [x0, y0] = polar(a0, r), [x1, y1] = polar(a1, r); return "M" + C0 + "," + C0 + " L" + x0 + "," + y0 + " A" + r + "," + r + " 0 0 1 " + x1 + "," + y1 + " Z"; };
+let secs = "", labs = "";
+for (const s of STATES) {
+  secs += '<path d="' + secPath(s.angle - 36, s.angle + 36, 128) + '" fill="' + s.color + '" opacity="' + (s.key == "anomaly" ? ".13" : ".07") + '"/>';
+  for (const a of [s.angle - 36, s.angle + 36]) {
+    const [x0, y0] = polar(a, 120), [x1, y1] = polar(a, 128);
+    secs += '<line x1="' + x0 + '" y1="' + y0 + '" x2="' + x1 + '" y2="' + y1 + '" stroke="#C9C1AD" stroke-width="1"/>';
+  }
+  const [lx, ly] = polar(s.angle, 146);
+  labs += '<text x="' + lx + '" y="' + (ly + 4) + '" text-anchor="middle" class="sector-label">' + s.name + '</text>';
+}
+const LEN = [118, 96, 108, 88, 112, 100], JIT = [-14, 10, -6, 16, -18, 6];
+let hands = "", legend = "";
+routines.forEach((r, i) => {
+  const st = STATES.find(s => s.key == rStates[i]);
+  const len = LEN[i % 6], ang = st.angle + JIT[i % 6];
+  hands += '<g class="hand" data-state="' + st.key + '" data-base="' + ang + '" data-href="' + r.file.path + '" style="transform-origin:170px 170px;transform:rotate(' + ang + 'deg);cursor:pointer">'
+    + '<line x1="170" y1="178" x2="170" y2="' + (170 - len) + '" stroke="#1B1812" stroke-width="2"/>'
+    + '<circle cx="170" cy="' + (170 - len) + '" r="8.5" fill="' + st.color + '" stroke="#F5F2EA" stroke-width="1.5"/>'
+    + '<text class="tip" x="170" y="' + (170 - len + 3.4) + '" text-anchor="middle">' + (i + 1) + '</text></g>';
+  legend += '<span data-href="' + r.file.path + '"><b>' + (i + 1) + '</b> ' + esc(r.name) + ' <span class="dot" style="background:' + st.color + '"></span></span>';
+});
+const clockSvg = '<svg class="clock-svg" viewBox="0 0 340 340">' + secs
+  + '<circle cx="170" cy="170" r="128" fill="none" stroke="#1B1812" stroke-width="1.5"/>'
+  + '<circle cx="170" cy="170" r="98" fill="none" stroke="#C9C1AD" stroke-width="1" stroke-dasharray="2 4"/>'
+  + labs + hands
+  + '<circle cx="170" cy="170" r="7" fill="#1B1812"/><circle cx="170" cy="170" r="2.5" fill="#F5F2EA"/></svg>';
+
+/* ───── 各区块 HTML ───── */
+const now = new Date();
+const pad = n => String(n).padStart(2, "0");
+const dateLine = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate()) + " " + ["SUN","MON","TUE","WED","THU","FRI","SAT"][now.getDay()] + " · " + pad(now.getHours()) + ":" + pad(now.getMinutes());
+const todayStr = dv.date("today").toFormat("yyyy-MM-dd");
+const hourNow = now.getHours();
+const period = hourNow < 6 ? "深夜好" : hourNow < 12 ? "早上好" : hourNow < 18 ? "下午好" : "晚上好";
+const WD = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const greet = period + " · " + now.getFullYear() + "." + pad(now.getMonth() + 1) + "." + pad(now.getDate()) + " " + WD[now.getDay()];
+const typesHtml = ORDER.filter(k => cnt[k]).map(k => '<span class="ht" data-search="path:' + k + '/" title="搜索 ' + k + '/ 下全部节点">' + k + ' <b>' + cnt[k] + '</b></span>').join("");
+const healthChip = defects > 0 ? '<span class="hchip warn">待治理 ' + defects + '</span>' : '<span class="hchip ok">健康 · 无断链 / 孤儿 / 争议</span>';
+const NAV = [["知识本体", CFG.navOntology], ["自动化", "08-Ops/README"], ["问答库", "07-QA/README"], ["收集箱", "Inbox/README"], ["日记", "05-Daily/" + todayStr], ["MOC", "00-Dashboard/MOC"]];
+const navHtml = '<div class="navlinks">' + NAV.map(([nm, h]) => '<a data-href="' + h + '">' + nm + '</a>').join('<span class="sep">·</span>') + '</div>';
+const _tw = (CFG.title || "VAULT").split(" ");
+const brandBig = esc(_tw[0]) + (_tw.length > 1 ? ' <em>' + esc(_tw.slice(1).join(" ")) + '</em>' : "");
+const mast = '<header class="mast rv rv1">'
+  + '<div class="brand"><div class="big">' + brandBig + '</div>'
+  + '<div class="subline"><span class="bbadge">THE BURROW</span><span class="greet">' + greet + '</span><span class="morning">近一日 <b data-href="' + (lastRun ? lastRun.file.path : "08-Ops/README") + '">' + nRecent + '</b> 个 agent 运行，<b data-href="08-Ops/review/README">' + cands.length + '</b> 项例外待裁决，<b data-href="08-Ops/README">' + nAnomaly + '</b> 个 agent 异常</span></div></div>'
+  + '<div class="mast-mid"><div class="mlbl">本体 · 全域构成（' + domainsUpper + '）</div><div class="types">' + typesHtml + '</div></div>'
+  + '<div class="head-right">' + navHtml + '<div class="hr-bot">' + healthChip + '<span class="date">' + dateLine + '</span></div></div></header>';
+const ranToday = runs.some(r => r.routine == "daily-routine" && r.started && r.started.toFormat && r.started.toFormat("yyyy-MM-dd") == todayStr);
+const dueQ = dv.pages('"07-QA"').where(q => q.type == "qa" && q.mode == "dynamic" && q.status == "due").array().length;
+const navrow = '<div class="navrow rv rv2">'
+  + '<div class="cap"><input class="capin" type="text" placeholder="捕捉 → Inbox：困惑 / 想法 / 链接，回车执行"><button class="capgo">执行</button></div>'
+  + '<div class="conrow navcon">' + [
+    cands.length ? ['review', 'primary', '裁决队列 ×' + cands.length, '有 ' + cands.length + ' 张候选卡待裁决'] : ['review', 'done', '裁决队列 ✓ 已清', '审核队列已清空'],
+    pendInbox.length ? ['digest', 'primary', '消化 INBOX ×' + pendInbox.length, '有 ' + pendInbox.length + ' 篇待消化'] : ['digest', 'done', '消化 INBOX ✓ 已空', '收集箱已排空'],
+    ranToday ? ['routine', 'done', '今日例行 ✓ 已跑', '答题员今日已运行'] : (dueQ ? ['routine', 'primary', '今日例行 ×' + dueQ, dueQ + ' 个动态问题到期'] : ['routine', '', '今日例行', '无到期问题，可手动触发']),
+    ['term', '', '终端', '在库根开一个集成终端'],
+  ].map(([act, cls, txt, tip]) => '<button data-act="' + act + '" class="' + cls + '" title="' + tip + '">' + txt + '</button>').join('') + '</div></div>';
+
+const ncell = (href, lbl, val, sub) => '<div class="ncell" data-href="' + href + '"><div class="lbl">' + lbl + '</div><div class="val">' + val + '</div><div class="sub">' + sub + '</div></div>';
+const nstrip = '<div class="nstrip rv rv2">'
+  + ncell("00-Dashboard/MOC", "本体节点", String(nodes.length), "边 " + edges + " · 域 " + nDomains)
+  + ncell("wiki/_index", "健康缺陷", defects > 0 ? '<span style="color:var(--amber)">' + defects + '</span>' : "0", '<span class="dot ' + (defects > 0 ? "a" : "g") + '"></span>断链 ' + broken + ' · 孤儿 ' + orphan + ' · 缺源 ' + noSrc + ' · 争议 ' + contested)
+  + ncell("Inbox/README", "待消化", pendInbox.length + ' <small>篇</small>', '<span class="dot ' + (oldest >= 3 || pendInbox.length >= 5 ? "r" : pendInbox.length ? "a" : "g") + '"></span>最老 ' + oldest + ' 天（≥3 天红灯）')
+  + ncell("08-Ops/review/README", "待裁决", cands.length > 0 ? '<span style="color:var(--red)">' + cands.length + '</span>' : "0", '<span class="dot ' + (cands.length ? "r pulse" : "g") + '"></span>例外优先 · 结果记入审批账本')
+  + ncell(lastRun ? lastRun.file.path : "08-Ops/README", "最近 RUN", lastRun ? '<small>' + esc(lastRun["budget-spent"] || lastRun.status) + '</small>' : "—", lastRun ? esc(lastRun.routine) + " · " + esc(lastRun.status) + " · esc " + (lastRun.escalations ?? 0) : "尚无 run 记录")
+  + '</div>';
+
+// 01 时钟
+const secClock = '<div class="sec rv rv3"><div class="sec-h" data-href="08-Ops/README"><h2><span class="no">01</span>Agent 状态钟</h2><span class="meta">AGENT CLOCK · 实时推断</span></div>'
+  + '<div class="clockbox">' + clockSvg + '<div class="clock-legend">' + legend + '</div></div></div>';
+
+// 02 Agent 清单
+const SLBL = { working: ["g", "工作中"], queue: ["a", "排队"], idle: ["s", "待命"], paused: ["p", "暂停"], anomaly: ["r", "异常"] };
+let applRows = "";
+routines.forEach((r, i) => {
+  const [cls, txt] = SLBL[rStates[i]];
+  applRows += '<tr class="' + (rStates[i] == "anomaly" ? "anomaly" : "") + '" data-href="' + r.file.path + '">'
+    + '<td class="a-name">' + esc(r.name) + '<small>' + esc(r.routine) + '</small></td>'
+    + '<td class="a-state"><span class="dot ' + cls + '"></span>' + txt + '</td>'
+    + '<td class="a-out">' + esc(cut(r["last-result"] || "—", 26)) + (r["last-run"] ? ' <small>' + fmtD(r["last-run"]) + '</small>' : "")
+    + '<br><span class="ctr">' + esc(cut(r.trigger || "", 34)) + ' · ' + esc(cut(r.budget || "", 20)) + '</span></td>'
+    + '<td class="a-tgl"><span class="tgl" data-toggle="' + r.file.path + '" data-cur="' + (r.status || "active") + '">' + (r.status == "paused" ? "恢复" : "暂停") + '</span></td></tr>';
+});
+const secAppl = '<div class="sec rv rv4"><div class="sec-h" data-href="08-Ops/README"><h2><span class="no">02</span>Agent 清单</h2><span class="meta">' + routines.length + ' ROUTINES · 契约约束</span></div>'
+  + '<table class="appl"><tbody>' + applRows + '</tbody></table></div>';
+
+// 控制台（+ 今日待办）
+const daily = dv.page("05-Daily/" + todayStr) || dv.page(todayStr);
+const openTasks = daily ? (daily.file.tasks || []).filter(t => !t.completed).slice(0, 5) : [];
+const taskHtml = daily
+  ? (openTasks.length ? openTasks.map(t => '<div class="tk" data-tline="' + t.line + '" data-tpath="' + t.path + '" title="点击勾掉">' + esc(cut(t.text, 40)) + '</div>').join("") : '<div class="tk" style="color:var(--green)">今日已清空</div>')
+  : '<div class="tk">还没有今天的日记</div>';
+const secTodo = '<div class="sec rv rv5"><div class="sec-h" data-href="05-Daily/' + todayStr + '"><h2><span class="no">07</span>待办</h2><span class="meta">' + todayStr + ' · DAILY</span></div>'
+  + '<div class="conbox"><div class="contasks" data-href="05-Daily/' + todayStr + '">' + taskHtml + '</div></div></div>';
+
+// 03 飞轮
+let flyHtml = "";
+if (!lastRun) flyHtml = '<div class="qempty">还没有 run 记录——首次无人值守任务后出现</div>';
+else {
+  flyHtml = '<div class="fly">' + steps.map(s => {
+    const fail = s.mark == "✗";
+    const col = fail ? "var(--red)" : s.mark == "✓" ? "var(--green)" : "var(--amber)";
+    return '<div class="step' + (fail ? " fail" : "") + '" data-href="' + lastRun.file.path + '"><span class="t">' + esc(s.t) + '</span><span class="mark" style="color:' + col + '">' + s.mark + '</span>'
+      + '<span class="what">' + esc(s.what) + (s.small ? '<small>' + esc(s.small) + '</small>' : "") + '</span><span class="n">' + esc(s.n) + '</span></div>';
+  }).join("") + '</div>'
+  + '<div class="runmeta"><a data-href="' + lastRun.file.path + '">RUN ' + esc(lastRun["run-id"] || lastRun.file.name) + '</a> · ' + esc(lastRun.outputs || "") + ' · 预算 ' + esc(lastRun["budget-spent"] || "—")
+  + (runs.length > 1 ? '<br>更早：' + runs.slice(1, 4).map(x => '<a data-href="' + x.file.path + '">' + esc(x.routine) + " " + fmtD(x.started) + " " + esc(x.status) + '</a>').join(" · ") : "") + '</div>';
+}
+const secFly = '<div class="sec rv rv4"><div class="sec-h"' + (lastRun ? ' data-href="' + lastRun.file.path + '"' : '') + '><h2><span class="no">03</span>运行轨迹</h2><span class="meta">' + (lastRun ? "RUN " + esc(lastRun["run-id"] || "") + " · " + esc(lastRun.routine).toUpperCase() : "NO RUNS") + '</span></div>' + flyHtml + '</div>';
+
+// 04 QA 时间线
+let qaHtml = "";
+if (!qas.length) qaHtml = '<div class="qempty">问答库为空</div>';
+else qaHtml = '<div class="qa">' + qas.map(q => {
+  const fresh = q.status == "fresh";
+  const scope = Array.isArray(q["recall-scope"]) ? q["recall-scope"].join("/") : (q["recall-scope"] || "");
+  return '<div class="qa-item" data-href="' + q.file.path + '"><span class="d">' + fmtD(q["last-run"]) + '</span><span class="rail"></span>'
+    + '<div><h4>' + (q["last-summary"] ? esc(cut(q["last-summary"], 56)) : '<span style="color:var(--ink-3)">（待作答）</span>') + '</h4>'
+    + '<div class="verdict ' + (fresh ? "v-hit" : "v-wait") + '">' + (fresh ? "✓ 本期已答 · fresh" : "○ 到期待答 · due") + '</div>'
+    + '<div class="q">Q：' + esc(q.file.name) + '（' + esc(q.cadence || "") + ' · ' + esc(scope) + '）</div></div></div>';
+}).join("") + '</div>';
+const secQa = '<div class="sec rv rv5"><div class="sec-h" data-href="07-QA/README"><h2><span class="no">04</span>QA 时间线</h2><span class="meta">APPEND-ONLY · 不变量 7</span></div>' + qaHtml + '</div>';
+
+// 05 审核队列
+const CHIP = { newnode: ["new", "新建节点"], retire: ["retire", "退役触发"], disputed: ["disp", "DISPUTED"], xedge: ["edge", "跨域边"], "t0-merge": ["edge", "T0 合并"] };
+let queueHtml = "";
+if (!cardData.length) queueHtml = '<div class="qempty"><div class="big">All quiet at the Burrow.</div>队列清空 · 候选由无人值守 agent 投递</div>';
+else {
+  queueHtml = '<div class="queue">' + cardData.map(({ c, diff, src }) => {
+    const [cls, nm] = CHIP[c.gate] || ["disp", c.gate];
+    return '<div class="qcard" data-href="' + c.file.path + '"><div class="card-top"><span class="chip ' + cls + '">' + nm + '</span>'
+      + '<span class="gatehint">审批账本 · ' + gateCtx(c.gate) + '</span></div>'
+      + '<h3>' + esc(c.target || c.file.name) + ' <span style="font-weight:400;color:var(--ink-3)">(' + esc(c.domain || "—") + ' · ' + esc(c.routine || "—") + ')</span></h3>'
+      + (diff ? '<div class="diff">' + diff + '</div>' : "")
+      + (src ? '<div class="src">来源：' + src + '</div>' : "") + '</div>';
+  }).join("") + '</div>'
+  + '<div class="qhint">终端说「<b>处理审核队列</b>」逐张裁决（或控制台按钮）→ 批准 / 驳回 / contested，结果记入审批账本。</div>';
+}
+const secQueue = '<div class="sec rv rv5"><div class="sec-h" data-href="08-Ops/review/README"><h2><span class="no">05</span>审核队列 · 例外裁决</h2><span class="meta">' + cands.length + ' PENDING · 裁决记账</span></div>' + queueHtml + '</div>';
+
+// 06 审批账本
+let gateHtml = "";
+for (const x of gates) {
+  let cls = "", tag = '<span class="gs">' + x.streak + "/" + x.threshold + '</span>', w = x.threshold ? Math.min(100, Math.round(x.streak / x.threshold * 100)) : 0;
+  if (x.state == "locked") { cls = "locked"; tag = '<span class="gs lock">永久人工</span>'; w = 100; }
+  else if (x.state == "auto") { cls = "full"; tag = '<span class="gs auto">自动批准 ✓</span>'; w = 100; }
+  gateHtml += '<div class="gate"><div class="gate-top"><span class="gn">' + esc(x.name) + '</span>' + tag + '</div>'
+    + '<div class="gbar ' + cls + '"><i style="width:' + w + '%"></i></div>'
+    + '<div class="note">' + esc(x.note || "") + '</div></div>';
+}
+const secGates = '<div class="sec rv rv6"><div class="sec-h" data-href="08-Ops/审批账本"><h2><span class="no">06</span>审批权限</h2><span class="meta">AUTO-APPROVAL · 连续批准升级 / 驳回降级</span></div>'
+  + '<div class="gates" data-href="08-Ops/审批账本">' + gateHtml + '</div></div>';
+
+// footer
+const foot = '<footer class="foot rv rv6"><div class="inv"><span>INV-1 编译单向</span><span>INV-4 退役不删除</span><span>INV-7 QA APPEND-ONLY</span><span>INV-8 严谨只在闸门</span></div>'
+  + '<span>' + esc(CFG.title) + ' · 08-OPS · RUNS ×' + runs.length + ' · <a data-href="08-Ops/README">陋居层</a> · <a data-href="00-Dashboard/MOC">MOC</a></span></footer>';
+
+/* ───── 知识跟踪条 ───── */
+const watchHtml = contestedNodes.length ? '<div class="watchbar rv rv2">'
+  + '<span class="wlbl">知识跟踪 · 争议悬置</span>'
+  + contestedNodes.map(p => '<span class="watchitem" data-href="' + p.file.path + '">'
+    + '<span class="wname">' + esc(p.title || p.file.name) + '</span>'
+    + (p.watch ? ' <span class="wcrux">→ ' + esc(p.watch) + '</span>' : '')
+    + '</span>').join('<span style="color:var(--hair-2);margin:0 6px">·</span>')
+  + '</div>' : '';
+
+/* ───── 今日 Pulse（启发束·满宽，置于网格之上）—— 心跳员产出，仿 ChatGPT Pulse 晨间卡 ───── */
+let secPulse = "";
+if (CFG.features && CFG.features.pulse) {
+  const ACC = { g: "var(--green)", r: "var(--red)", a: "var(--amber)", s: "var(--slate)" };
+  const pulseFresh = pulseDoc && pulseDoc.date && pulseDoc.date.toFormat && pulseDoc.date.toFormat("yyyy-MM-dd") == todayStr;
+  let pulseInner;
+  if (!pulseDoc) {
+    pulseInner = '<div class="qempty"><div class="big">心跳未起。</div>还没有今日启发 —— 终端说「生成今日 pulse」</div>';
+  } else {
+    pulseInner = '<div class="plz">' + pulseCards.map(c => {
+      const acc = ACC[c.accent] || ACC.a;
+      const refs = Array.isArray(c.refs) ? c.refs : (c.refs ? [c.refs] : []);
+      const refHtml = refs.map(r => '<span class="plref" data-href="' + esc(r) + '">' + esc(r) + '</span>').join("");
+      return '<div class="plcard" data-href="' + pulseDoc.file.path + '" style="border-left-color:' + acc + '">'
+        + '<div class="pltag"><span>' + esc(cut(c.tag || "", 30)) + '</span><span class="pln" style="color:' + acc + '">' + esc(c.n || "") + '</span></div>'
+        + '<div class="pltitle">' + esc(c.title || "") + '</div>'
+        + '<div class="plbody">' + esc(c.body || "") + '</div>'
+        + (c.hook ? '<div class="plhook"><b>对谈入口 ·</b> ' + esc(c.hook) + '</div>' : "")
+        + (refHtml ? '<div class="plrefs">' + refHtml + '</div>' : "")
+        + '</div>';
+    }).join("") + '</div>';
+  }
+  const pulseDateStr = pulseDoc && pulseDoc.date && pulseDoc.date.toFormat ? pulseDoc.date.toFormat("yyyy-MM-dd") : todayStr;
+  const pulseMeta = pulseDoc ? (pulseCards.length + ' 张 · ' + (pulseFresh ? '今日 · fresh' : pulseDateStr) + ' · ' + esc(cut(pulseDoc.source || "", 32))) : 'NO PULSE';
+  secPulse = '<div class="sec plsec rv rv2"><div class="sec-h" data-href="' + (pulseDoc ? pulseDoc.file.path : "08-Ops/pulse") + '"><h2><span class="no">✦</span>今日 Pulse · 启发</h2><span class="meta">DAILY PULSE · ' + pulseMeta + '</span></div>' + pulseInner + '</div>';
+}
+
+/* ───── 组装 ───── */
+const root = dv.el("div", "");
+root.className = "bw";
+root.innerHTML = mast + nstrip + watchHtml + navrow + secPulse
+  + '<div class="bw-grid">'
+  + '<div class="col col1">' + secClock + secAppl + '</div>'
+  + '<div class="col col2">' + secFly + secQa + '</div>'
+  + '<div class="col col3">' + secQueue + secGates + secTodo + '</div>'
+  + '</div>' + foot;
+
+/* ───── 交互 ───── */
+// 点击下钻（任何 data-href 元素 → 打开对应笔记）
+root.addEventListener("click", e => {
+  if (e.target.closest("button")) return;
+  const sr = e.target.closest("[data-search]");
+  if (sr) { try { app.internalPlugins.getPluginById("global-search").instance.openGlobalSearch(sr.dataset.search); } catch (err) { new Notice("全局搜索不可用"); } return; }
+  const el = e.target.closest("[data-href]");
+  if (el) { e.preventDefault(); app.workspace.openLinkText(el.dataset.href, "", false); }
+});
+// Agent 暂停/恢复：翻转契约 frontmatter status（状态钟与清单随 Dataview 刷新归位）
+root.querySelectorAll(".tgl").forEach(el => el.addEventListener("click", async e => {
+  e.stopPropagation();
+  const f = app.vault.getAbstractFileByPath(el.dataset.toggle);
+  if (!f) { new Notice("找不到契约文件"); return; }
+  const next = el.dataset.cur == "paused" ? "active" : "paused";
+  await app.fileManager.processFrontMatter(f, fm => { fm.status = next; });
+  new Notice(f.basename + (next == "paused" ? " 已暂停 · 下次 tick 跳过" : " 已恢复"));
+}));
+// 今日待办：点击单条任务勾掉（按行号回写 Daily）
+root.querySelectorAll(".tk[data-tline]").forEach(el => el.addEventListener("click", async e => {
+  e.stopPropagation();
+  const f = app.vault.getAbstractFileByPath(el.dataset.tpath);
+  if (!f) return;
+  await app.vault.process(f, txt => {
+    const ls = txt.split("\n"); const i = +el.dataset.tline;
+    if (ls[i] !== undefined) ls[i] = ls[i].replace("- [ ]", "- [x]");
+    return ls.join("\n");
+  });
+  el.style.textDecoration = "line-through"; el.style.opacity = ".5";
+}));
+// 控制台按钮：集成终端优先，回退 Terminal.app
+const CLAUDE = "/Users/jameslee/.local/bin/claude";
+const CMDS = {
+  review:  { cmd: "处理审核队列",  id: "terminal:open-terminal.claudeReview.root" },
+  digest:  { cmd: "/digest-inbox",  id: "terminal:open-terminal.claudeDigest.root" },
+  routine: { cmd: "/daily-routine", id: "terminal:open-terminal.claudeRoutine.root" },
+  term:    { cmd: "",               id: "terminal:open-terminal.darwinIntegratedDefault.root" },
+};
+root.querySelectorAll("button[data-act]").forEach(b => b.addEventListener("click", () => {
+  const a = CMDS[b.dataset.act];
+  if (b.dataset.act != "term" && !b.dataset.fired) { b.dataset.fired = "1"; b.classList.add("fired"); b.append(" · 已发起"); }
+  const reg = app.commands && app.commands.commands;
+  if (a.id && reg && reg[a.id]) { app.commands.executeCommandById(a.id); new Notice("集成终端 · " + (a.cmd || "shell")); return; }
+  try {
+    const { spawn } = require("child_process");
+    const ad = app.vault.adapter, vault = ad.getBasePath ? ad.getBasePath() : ad.basePath;
+    const sh = a.cmd ? "cd '" + vault + "' && " + CLAUDE + " '" + a.cmd + "'" : "cd '" + vault + "' && " + CLAUDE;
+    spawn("osascript", ["-e", 'tell application "Terminal" to do script "' + sh.replace(/"/g, '\\"') + '"', "-e", 'tell application "Terminal" to activate']);
+    new Notice("外部终端 · " + (a.cmd || "shell"));
+  } catch (err) { new Notice("启动失败：" + (err && err.message || err)); }
+}));
+// 捕捉栏：建 Inbox 档（digest-inbox 按 compiled:false 识别为待消化）
+const capIn = root.querySelector(".capin"), capGo = root.querySelector(".capgo");
+const doCapture = async () => {
+  const txt = (capIn.value || "").trim();
+  if (!txt) { new Notice("先输入内容再执行"); return; }
+  const clean = txt.replace(/[\\/:*?"<>|#^\[\]]/g, " ").replace(/\s+/g, " ").trim();
+  const title = clean.length > 24 ? clean.slice(0, 24) : clean;
+  let path = "Inbox/" + todayStr + "-" + title + ".md";
+  if (app.vault.getAbstractFileByPath(path)) path = "Inbox/" + todayStr + "-" + title + "-" + pad(now.getHours()) + pad(now.getMinutes()) + ".md";
+  const body = ["---", "tags: [research]", "type: research-note", "status: open",
+    'topic: "' + title + '"', 'created: "' + todayStr + '"', 'updated: "' + todayStr + '"',
+    'wiki-topic: ""', "compiled: false", "---", "",
+    "# " + title, "", "## 困惑与问题", "", "- " + txt, "",
+    "## 当前思路", "", "- ", "", "## 研究过程", "", "- ", ""].join("\n");
+  try {
+    await app.vault.create(path, body);
+    capIn.value = "";
+    new Notice("已捕捉 → " + path);
+    app.workspace.openLinkText(path, "", false);
+  } catch (err) { new Notice("捕捉失败：" + (err && err.message || err)); }
+};
+capGo.addEventListener("click", doCapture);
+capIn.addEventListener("keydown", e => { if (e.key === "Enter") doCapture(); });
+
+// 工作中的指针轻微摆动（demo 同款，2.6s 周期）
+if (window._bwClockTick) clearInterval(window._bwClockTick);
+window._bwClockTick = setInterval(() => {
+  if (!root.isConnected) { clearInterval(window._bwClockTick); return; }
+  root.querySelectorAll('.hand[data-state="working"]').forEach(g => {
+    const w = Math.random() * 8 - 4;
+    g.style.transform = "rotate(" + (parseFloat(g.dataset.base) + w) + "deg)";
+  });
+}, 2600);
+
+} catch (e) { dv.paragraph("[!] Dashboard 渲染失败：" + (e && e.message || e) + "<br><small>" + (e && e.stack ? String(e.stack).split("\n").slice(0,3).join("<br>") : "") + "</small>"); }
+```

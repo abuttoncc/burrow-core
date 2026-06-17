@@ -1,0 +1,12 @@
+{
+  "_note": "引擎文件映射表（src 相对 burrow 包根；dst 相对各库根）。库的发现靠扫 workspace 下 */.burrow/config.json，不在此写死。",
+  "files": [
+    { "src": "core/dashboard/Dashboard.md.tmpl",                   "dst": "00-Dashboard/Dashboard.md",                              "mode": "tmpl" },
+    { "src": "core/dashboard/dashboard.css.tmpl",                  "dst": ".obsidian/snippets/dashboard.css",                       "mode": "tmpl" },
+    { "src": "core/auto-wiki/references/schema.py",               "dst": ".claude/skills/auto-wiki/references/schema.py",          "mode": "copy" },
+    { "src": "core/auto-wiki/references/store.py",                "dst": ".claude/skills/auto-wiki/references/store.py",           "mode": "copy" },
+    { "src": "core/auto-wiki/references/position_encoding.py",    "dst": ".claude/skills/auto-wiki/references/position_encoding.py","mode": "copy" },
+    { "src": "core/auto-wiki/references/expand.py",              "dst": ".claude/skills/auto-wiki/references/expand.py",          "mode": "copy" },
+    { "src": "core/auto-wiki/references/new_domain.py.tmpl",      "dst": ".claude/skills/auto-wiki/references/new_domain.py",       "mode": "tmpl" }
+  ]
+}

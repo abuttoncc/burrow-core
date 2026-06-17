@@ -1,0 +1,16 @@
+# Python build / packaging
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+
+# venvs / tooling
+.venv/
+venv/
+.env
+
+# OS
+.DS_Store
